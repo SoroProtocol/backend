@@ -6,9 +6,10 @@ import { StreamStatus }   from '../streams/stream.entity';
 
 @Injectable()
 export class IndexerService implements OnModuleInit {
-  private readonly logger = new Logger(IndexerService.name);
-  private lastIndexedLedger = 0;
-  private running = false;
+  private readonly logger        = new Logger(IndexerService.name);
+  private lastIndexedLedger      = 0;
+  private readonly processedTxs  = new Set<string>(); // dedup cache
+  private running                = false;
 
   constructor(
     private readonly stellar: StellarService,
@@ -24,13 +25,13 @@ export class IndexerService implements OnModuleInit {
 
   async startIndexing() {
     this.running = true;
-    this.logger.log('Starting Stellar event indexer...');
+    this.logger.log('Stellar event indexer started');
 
     while (this.running) {
       try {
         await this.indexLatest();
       } catch (err) {
-        this.logger.error('Indexer error:', err);
+        this.logger.error('Indexer error', err);
       }
       await this.sleep(5000);
     }
@@ -40,19 +41,29 @@ export class IndexerService implements OnModuleInit {
     const latest = await this.stellar.getLatestLedger();
     if (latest <= this.lastIndexedLedger) return;
 
-    const contractId = this.config.get('STREAM_CONTRACT_ID');
+    const contractId = this.config.get<string>('STREAM_CONTRACT_ID');
     if (!contractId) return;
 
-    // In production: use getEvents() with topic filters for StreamCreated,
-    // Withdrawn, Cancelled events, then update the streams store accordingly.
+    // Prune dedup cache older than 10k entries to prevent memory leak
+    if (this.processedTxs.size > 10_000) {
+      const arr = Array.from(this.processedTxs);
+      arr.slice(0, 5000).forEach(tx => this.processedTxs.delete(tx));
+    }
+
     this.lastIndexedLedger = latest;
   }
 
-  async processEvent(eventType: string, streamId: string, data: Record<string, unknown>) {
-    this.logger.log(`Processing event: ${eventType} for stream ${streamId}`);
+  async processEvent(txHash: string, eventType: string, streamId: string, data: Record<string, unknown>) {
+    // Deduplicate — Soroban RPCs can return the same event multiple times
+    if (this.processedTxs.has(txHash)) {
+      this.logger.debug(`Skipping duplicate event ${txHash}`);
+      return;
+    }
+    this.processedTxs.add(txHash);
+    this.logger.log(`Event: ${eventType} | stream ${streamId} | tx ${txHash}`);
+
     switch (eventType) {
       case 'StreamCreated':
-        this.logger.log(`New stream indexed: ${streamId}`);
         break;
       case 'Withdrawn':
         await this.streams.updateWithdrawn(streamId, BigInt(data.amount as string));
@@ -64,8 +75,5 @@ export class IndexerService implements OnModuleInit {
   }
 
   stopIndexing() { this.running = false; }
-
-  private sleep(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
+  private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 }
