@@ -1,10 +1,10 @@
 import {
   Controller, Get, Post, Param, Body, Query,
-  UseGuards, HttpCode, HttpStatus,
+  HttpCode, HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { StreamsService }  from './streams.service';
-import { CreateStreamDto } from './dto/create-stream.dto';
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { StreamsService }        from './streams.service';
+import { CreateStreamDto }       from './dto/create-stream.dto';
 
 @ApiTags('streams')
 @Controller('streams')
@@ -12,13 +12,23 @@ export class StreamsController {
   constructor(private readonly streams: StreamsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List streams for an address' })
+  @ApiOperation({ summary: 'List streams, optionally filtered by address' })
   async findAll(@Query('address') address?: string) {
     return this.streams.findAll(address);
   }
 
+  @Get('analytics')
+  @ApiOperation({ summary: 'Aggregate stream stats for an address' })
+  async analytics(@Query('address') address: string) {
+    const all = await this.streams.findAll(address);
+    const active    = all.filter(s => s.status === 'active').length;
+    const cancelled = all.filter(s => s.status === 'cancelled').length;
+    const totalRate = all.reduce((sum, s) => sum + s.ratePerSecond, 0n);
+    return { total: all.length, active, cancelled, totalRatePerSecond: totalRate.toString() };
+  }
+
   @Get(':id')
-  @ApiOperation({ summary: 'Get a single stream by ID' })
+  @ApiOperation({ summary: 'Get stream by ID' })
   async findOne(@Param('id') id: string) {
     return this.streams.findOne(id);
   }
