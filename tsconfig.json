@@ -13,6 +13,9 @@
     "incremental":      true,
     "skipLibCheck":     true,
     "strictNullChecks": true,
+    "noImplicitAny":    true,
     "paths":            { "@/*": ["src/*"] }
-  }
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist"]
 }
