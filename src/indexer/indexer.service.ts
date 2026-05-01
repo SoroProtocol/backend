@@ -1,79 +1,179 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService }  from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
 import { StreamsService } from '../streams/streams.service';
+import { WebhooksService }from '../webhooks/webhooks.service';
+import { WebhookEvent }   from '../webhooks/webhook.entity';
 import { StreamStatus }   from '../streams/stream.entity';
+import { SorobanRpc, xdr, scValToNative } from '@stellar/stellar-sdk';
+
+const POLL_INTERVAL_MS = 5_000;
+const LEDGERS_PER_PAGE = 100;
 
 @Injectable()
-export class IndexerService implements OnModuleInit {
+export class IndexerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger        = new Logger(IndexerService.name);
   private lastIndexedLedger      = 0;
-  private readonly processedTxs  = new Set<string>(); // dedup cache
+  private readonly processedTxs  = new Set<string>();
   private running                = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
-    private readonly stellar: StellarService,
-    private readonly streams: StreamsService,
-    private readonly config:  ConfigService,
+    private readonly stellar:  StellarService,
+    private readonly streams:  StreamsService,
+    private readonly webhooks: WebhooksService,
+    private readonly config:   ConfigService,
   ) {}
 
   onModuleInit() {
     if (this.config.get('NODE_ENV') !== 'test') {
-      void this.startIndexing();
+      void this.startPolling();
     }
   }
 
-  async startIndexing() {
+  onModuleDestroy() {
+    this.running = false;
+    if (this.timer) clearTimeout(this.timer);
+  }
+
+  async startPolling() {
     this.running = true;
-    this.logger.log('Stellar event indexer started');
-
-    while (this.running) {
-      try {
-        await this.indexLatest();
-      } catch (err) {
-        this.logger.error('Indexer error', err);
-      }
-      await this.sleep(5000);
-    }
+    this.logger.log('Soroban event indexer started');
+    await this.poll();
   }
 
-  private async indexLatest() {
-    const latest = await this.stellar.getLatestLedger();
+  private async poll() {
+    if (!this.running) return;
+    try {
+      await this.indexNewLedgers();
+    } catch (err) {
+      this.logger.error('Indexer poll error', err);
+    }
+    this.timer = setTimeout(() => void this.poll(), POLL_INTERVAL_MS);
+  }
+
+  private async indexNewLedgers() {
+    const server     = this.stellar.getSoroban();
+    const latest     = (await server.getLatestLedger()).sequence;
     if (latest <= this.lastIndexedLedger) return;
 
     const contractId = this.config.get<string>('STREAM_CONTRACT_ID');
     if (!contractId) return;
 
-    // Prune dedup cache older than 10k entries to prevent memory leak
-    if (this.processedTxs.size > 10_000) {
-      const arr = Array.from(this.processedTxs);
-      arr.slice(0, 5000).forEach(tx => this.processedTxs.delete(tx));
+    const startLedger = Math.max(
+      this.lastIndexedLedger + 1,
+      latest - LEDGERS_PER_PAGE,
+    );
+
+    let response: SorobanRpc.Api.GetEventsResponse;
+    try {
+      response = await server.getEvents({
+        startLedger,
+        filters: [
+          {
+            type:        'contract',
+            contractIds: [contractId],
+            topics:      [
+              ['*'],  // match any topic[0] (event name)
+            ],
+          },
+        ],
+        limit: 200,
+      });
+    } catch (err) {
+      this.logger.warn(`getEvents failed (ledger ${startLedger}–${latest}): ${err}`);
+      this.lastIndexedLedger = latest;
+      return;
+    }
+
+    for (const event of response.events) {
+      await this.processEvent(event);
     }
 
     this.lastIndexedLedger = latest;
+    if (response.events.length > 0) {
+      this.logger.log(`Indexed ${response.events.length} events up to ledger ${latest}`);
+    }
   }
 
-  async processEvent(txHash: string, eventType: string, streamId: string, data: Record<string, unknown>) {
-    // Deduplicate — Soroban RPCs can return the same event multiple times
-    if (this.processedTxs.has(txHash)) {
-      this.logger.debug(`Skipping duplicate event ${txHash}`);
-      return;
-    }
+  private async processEvent(event: SorobanRpc.Api.EventResponse) {
+    const txHash = event.txHash;
+    if (this.processedTxs.has(txHash)) return;
     this.processedTxs.add(txHash);
-    this.logger.log(`Event: ${eventType} | stream ${streamId} | tx ${txHash}`);
 
-    switch (eventType) {
+    // Prune dedup cache above 20k entries
+    if (this.processedTxs.size > 20_000) {
+      const oldest = Array.from(this.processedTxs).slice(0, 10_000);
+      oldest.forEach(h => this.processedTxs.delete(h));
+    }
+
+    // topics[0] is the event name as a Symbol ScVal
+    const eventNameScVal = event.topic[0];
+    if (!eventNameScVal) return;
+
+    const eventName = scValToNative(xdr.ScVal.fromXDR(eventNameScVal, 'base64')) as string;
+    const data      = scValToNative(xdr.ScVal.fromXDR(event.value, 'base64'));
+
+    this.logger.debug(`Event: ${eventName} | tx: ${txHash.slice(0, 12)}…`);
+
+    switch (eventName) {
       case 'StreamCreated':
+        await this.onStreamCreated(data as [bigint, string, string, bigint], txHash);
         break;
       case 'Withdrawn':
-        await this.streams.updateWithdrawn(streamId, BigInt(data.amount as string));
+        await this.onWithdrawn(data as [bigint, bigint], txHash);
         break;
       case 'Cancelled':
-        await this.streams.updateStatus(streamId, StreamStatus.CANCELLED);
+        await this.onCancelled(data as [bigint, bigint, bigint], txHash);
         break;
     }
   }
 
-  stopIndexing() { this.running = false; }
-  private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+  private async onStreamCreated(
+    [streamId, sender, recipient, deposit]: [bigint, string, string, bigint],
+    txHash: string,
+  ) {
+    try {
+      await this.streams.upsertFromChain({
+        contractStreamId: streamId.toString(),
+        sender,
+        recipient,
+        txHash,
+      });
+      await this.webhooks.dispatch(WebhookEvent.STREAM_CREATED, {
+        streamId: streamId.toString(), sender, recipient,
+        deposit: deposit.toString(), txHash,
+      });
+    } catch (err) {
+      this.logger.error('onStreamCreated error', err);
+    }
+  }
+
+  private async onWithdrawn([streamId, amount]: [bigint, bigint], txHash: string) {
+    try {
+      await this.streams.updateWithdrawnByContractId(streamId.toString(), amount);
+      await this.webhooks.dispatch(WebhookEvent.STREAM_WITHDRAWN, {
+        streamId: streamId.toString(), amount: amount.toString(), txHash,
+      });
+    } catch (err) {
+      this.logger.error('onWithdrawn error', err);
+    }
+  }
+
+  private async onCancelled(
+    [streamId, toRecipient, toSender]: [bigint, bigint, bigint],
+    txHash: string,
+  ) {
+    try {
+      await this.streams.updateStatusByContractId(streamId.toString(), StreamStatus.CANCELLED);
+      await this.webhooks.dispatch(WebhookEvent.STREAM_CANCELLED, {
+        streamId: streamId.toString(),
+        toRecipient: toRecipient.toString(),
+        toSender:    toSender.toString(),
+        txHash,
+      });
+    } catch (err) {
+      this.logger.error('onCancelled error', err);
+    }
+  }
 }
