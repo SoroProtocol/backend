@@ -52,7 +52,8 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
         Buffer.from(signedNonce, 'base64'),
       );
       if (!valid) throw new UnauthorizedException('Invalid signature');
-    } catch {
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
       throw new UnauthorizedException('Signature verification failed');
     }
 
