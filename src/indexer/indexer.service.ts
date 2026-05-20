@@ -82,7 +82,6 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       });
     } catch (err) {
       this.logger.warn(`getEvents failed (ledger ${startLedger}–${latest}): ${err}`);
-      this.lastIndexedLedger = latest;
       return;
     }
 
