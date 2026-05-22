@@ -49,7 +49,9 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       this.logger.error('Indexer poll error', err);
     }
-    this.timer = setTimeout(() => void this.poll(), POLL_INTERVAL_MS);
+    if (this.running) {
+      this.timer = setTimeout(() => void this.poll(), POLL_INTERVAL_MS);
+    }
   }
 
   private async indexNewLedgers() {
