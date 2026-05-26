@@ -130,6 +130,8 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       case 'Cancelled':
         await this.onCancelled(data as [bigint, bigint, bigint], txHash);
         break;
+      default:
+        this.logger.warn(`Unrecognised contract event: ${eventName} (tx: ${txHash.slice(0, 12)}…)`);
     }
   }
 
