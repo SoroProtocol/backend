@@ -16,6 +16,10 @@ export class WebhooksService {
   }
 
   subscribe(url: string, events: WebhookEvent[], address: string): WebhookSubscription {
+    const existing = Array.from(this.subscriptions.values())
+      .find(s => s.url === url && s.address === address);
+    if (existing) return existing;
+
     const sub: WebhookSubscription = {
       id:        crypto.randomUUID(),
       url,
