@@ -73,7 +73,8 @@ export class WebhooksService {
       this.logger.log(`Webhook delivered: ${event} → ${sub.url}`);
     } catch (err) {
       if (attempt < this.MAX_RETRIES - 1) {
-        const delay = Math.pow(2, attempt) * 1000;
+        const jitter = Math.floor(crypto.randomInt(0, 500));
+        const delay  = Math.pow(2, attempt) * 1000 + jitter;
         this.logger.warn(`Webhook retry ${attempt + 1}/${this.MAX_RETRIES} in ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
         return this.deliverWithRetry(sub, event, payload, attempt + 1);
