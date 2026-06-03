@@ -28,8 +28,11 @@ export class StreamsController {
     const all = await this.streams.findAll(address);
     const active    = all.filter(s => s.status === 'active').length;
     const cancelled = all.filter(s => s.status === 'cancelled').length;
-    const totalRate = all.reduce((sum, s) => sum + s.ratePerSecond, 0n);
-    return { total: all.length, active, cancelled, totalRatePerSecond: totalRate.toString() };
+    const completed = all.filter(s => s.status === 'completed').length;
+    const totalRate = all
+      .filter(s => s.status === 'active')
+      .reduce((sum, s) => sum + s.ratePerSecond, 0n);
+    return { total: all.length, active, cancelled, completed, totalRatePerSecond: totalRate.toString() };
   }
 
   @Get(':id')
