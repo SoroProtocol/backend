@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { StreamEntity, StreamStatus }             from './stream.entity';
 import { CreateStreamDto }                        from './dto/create-stream.dto';
+import * as crypto from 'crypto';
 
 interface ChainStreamData {
   contractStreamId: string;
@@ -17,7 +18,7 @@ export class StreamsService {
   private readonly byContractId: Map<string, StreamEntity>   = new Map();
 
   async create(dto: CreateStreamDto, txHash: string): Promise<StreamEntity> {
-    const id = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `stream-${crypto.randomUUID()}`;
     const entity: StreamEntity = {
       id,
       contractStreamId: '0',
