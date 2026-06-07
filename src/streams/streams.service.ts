@@ -86,7 +86,10 @@ export class StreamsService {
 
   async updateStatusByContractId(contractStreamId: string, status: StreamStatus) {
     const s = this.byContractId.get(contractStreamId);
-    if (!s) return;
+    if (!s) {
+      this.logger.warn(`updateStatusByContractId: unknown contractStreamId ${contractStreamId}`);
+      return;
+    }
     s.status    = status;
     s.updatedAt = new Date();
   }
@@ -101,7 +104,10 @@ export class StreamsService {
 
   async updateWithdrawnByContractId(contractStreamId: string, amount: bigint) {
     const s = this.byContractId.get(contractStreamId);
-    if (!s) return;
+    if (!s) {
+      this.logger.warn(`updateWithdrawnByContractId: unknown contractStreamId ${contractStreamId}`);
+      return;
+    }
     s.withdrawn  = amount;
     s.updatedAt  = new Date();
   }
