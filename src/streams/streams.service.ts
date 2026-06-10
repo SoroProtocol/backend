@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { StreamEntity, StreamStatus }             from './stream.entity';
 import { CreateStreamDto }                        from './dto/create-stream.dto';
+import * as crypto from 'crypto';
 
 interface ChainStreamData {
   contractStreamId: string;
@@ -17,7 +18,7 @@ export class StreamsService {
   private readonly byContractId: Map<string, StreamEntity>   = new Map();
 
   async create(dto: CreateStreamDto, txHash: string): Promise<StreamEntity> {
-    const id = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `stream-${crypto.randomUUID()}`;
     const entity: StreamEntity = {
       id,
       contractStreamId: '0',
@@ -85,7 +86,10 @@ export class StreamsService {
 
   async updateStatusByContractId(contractStreamId: string, status: StreamStatus) {
     const s = this.byContractId.get(contractStreamId);
-    if (!s) return;
+    if (!s) {
+      this.logger.warn(`updateStatusByContractId: unknown contractStreamId ${contractStreamId}`);
+      return;
+    }
     s.status    = status;
     s.updatedAt = new Date();
   }
@@ -100,7 +104,10 @@ export class StreamsService {
 
   async updateWithdrawnByContractId(contractStreamId: string, amount: bigint) {
     const s = this.byContractId.get(contractStreamId);
-    if (!s) return;
+    if (!s) {
+      this.logger.warn(`updateWithdrawnByContractId: unknown contractStreamId ${contractStreamId}`);
+      return;
+    }
     s.withdrawn  = amount;
     s.updatedAt  = new Date();
   }

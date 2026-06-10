@@ -20,8 +20,8 @@ export class AuthController {
 
   @Get('challenge')
   @ApiOperation({ summary: 'Get a sign challenge for a Stellar address' })
-  challenge(@Query('address') address: string) {
-    return { nonce: this.auth.generateChallenge(address) };
+  challenge(@Query() query: ChallengeDto) {
+    return { nonce: this.auth.generateChallenge(query.address) };
   }
 
   @Post('verify')

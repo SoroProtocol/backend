@@ -6,7 +6,7 @@ export enum StreamStatus {
 
 export class StreamEntity {
   id:              string;
-  contractStreamId: bigint;
+  contractStreamId: string;
   sender:          string;
   recipient:       string;
   token:           string;

@@ -49,7 +49,9 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       this.logger.error('Indexer poll error', err);
     }
-    this.timer = setTimeout(() => void this.poll(), POLL_INTERVAL_MS);
+    if (this.running) {
+      this.timer = setTimeout(() => void this.poll(), POLL_INTERVAL_MS);
+    }
   }
 
   private async indexNewLedgers() {
@@ -82,7 +84,6 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       });
     } catch (err) {
       this.logger.warn(`getEvents failed (ledger ${startLedger}–${latest}): ${err}`);
-      this.lastIndexedLedger = latest;
       return;
     }
 
@@ -103,8 +104,11 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
 
     // Prune dedup cache above 20k entries
     if (this.processedTxs.size > 20_000) {
-      const oldest = Array.from(this.processedTxs).slice(0, 10_000);
-      oldest.forEach(h => this.processedTxs.delete(h));
+      let pruned = 0;
+      for (const h of this.processedTxs) {
+        this.processedTxs.delete(h);
+        if (++pruned >= 10_000) break;
+      }
     }
 
     // topics[0] is the event name as a Symbol ScVal
@@ -126,6 +130,8 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       case 'Cancelled':
         await this.onCancelled(data as [bigint, bigint, bigint], txHash);
         break;
+      default:
+        this.logger.warn(`Unrecognised contract event: ${eventName} (tx: ${txHash.slice(0, 12)}…)`);
     }
   }
 
