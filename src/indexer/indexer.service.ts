@@ -5,7 +5,7 @@ import { StreamsService } from '../streams/streams.service';
 import { WebhooksService }from '../webhooks/webhooks.service';
 import { WebhookEvent }   from '../webhooks/webhook.entity';
 import { StreamStatus }   from '../streams/stream.entity';
-import { SorobanRpc, xdr, scValToNative } from '@stellar/stellar-sdk';
+import { SorobanRpc, scValToNative } from '@stellar/stellar-sdk';
 
 const POLL_INTERVAL_MS = 5_000;
 const LEDGERS_PER_PAGE = 100;
@@ -115,8 +115,8 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     const eventNameScVal = event.topic[0];
     if (!eventNameScVal) return;
 
-    const eventName = scValToNative(xdr.ScVal.fromXDR(eventNameScVal, 'base64')) as string;
-    const data      = scValToNative(xdr.ScVal.fromXDR(event.value, 'base64'));
+    const eventName = scValToNative(eventNameScVal) as string;
+    const data      = scValToNative(event.value);
 
     this.logger.debug(`Event: ${eventName} | tx: ${txHash.slice(0, 12)}…`);
 
