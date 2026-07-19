@@ -1,6 +1,7 @@
 import { Module }        from '@nestjs/common';
 import { ConfigModule }  from '@nestjs/config';
 import { StreamsModule } from './streams/streams.module';
+import { VestingModule } from './vesting/vesting.module';
 import { IndexerModule } from './indexer/indexer.module';
 import { WebhooksModule }from './webhooks/webhooks.module';
 import { AuthModule }    from './auth/auth.module';
@@ -13,6 +14,7 @@ import { HealthModule }  from './health/health.module';
     StellarModule,
     AuthModule,
     StreamsModule,
+    VestingModule,
     IndexerModule,
     WebhooksModule,
     HealthModule,
