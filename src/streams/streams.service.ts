@@ -98,6 +98,31 @@ export class StreamsService {
     return all.filter(s => s.sender === address || s.recipient === address);
   }
 
+  async findAllPaginated(address: string | undefined, options: ListStreamsOptions = {}): Promise<PaginatedStreams> {
+    const page   = options.page   ?? 1;
+    const limit  = options.limit  ?? DEFAULT_LIMIT;
+    const sortBy = options.sortBy ?? 'createdAt';
+    const order  = options.order  ?? 'desc';
+
+    if (!Number.isInteger(page) || page < 1) {
+      throw new BadRequestException('page must be a positive integer');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
+      throw new BadRequestException(`limit must be a positive integer between 1 and ${MAX_LIMIT}`);
+    }
+
+    const all    = await this.findAll(address);
+    const sorted = [...all].sort((a, b) => {
+      const cmp = compareByField(a, b, sortBy);
+      return order === 'asc' ? cmp : -cmp;
+    });
+
+    const total = sorted.length;
+    const start = (page - 1) * limit;
+
+    return { data: sorted.slice(start, start + limit), page, limit, total };
+  }
+
   async findOne(id: string): Promise<StreamEntity> {
     const stream = this.byId.get(id);
     if (!stream) throw new NotFoundException(`Stream ${id} not found`);
