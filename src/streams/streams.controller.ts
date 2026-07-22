@@ -5,6 +5,7 @@ import {
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { StreamsService }        from './streams.service';
 import { CreateStreamDto }       from './dto/create-stream.dto';
+import { ListStreamsDto }        from './dto/list-streams.dto';
 
 const STELLAR_ADDR_RE = /^G[A-Z2-7]{55}$/;
 
@@ -14,9 +15,17 @@ export class StreamsController {
   constructor(private readonly streams: StreamsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List streams, optionally filtered by address' })
-  async findAll(@Query('address') address?: string) {
-    return this.streams.findAll(address);
+  @ApiOperation({ summary: 'List streams, paginated and sorted newest-first by default. Pass all=true for the old unbounded flat-array response' })
+  async findAll(@Query() query: ListStreamsDto) {
+    if (query.all === 'true') {
+      return this.streams.findAll(query.address);
+    }
+    return this.streams.findAllPaginated(query.address, {
+      page:   query.page,
+      limit:  query.limit,
+      sortBy: query.sortBy,
+      order:  query.order,
+    });
   }
 
   @Get('analytics')
