@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { StreamsService }      from '../src/streams/streams.service';
 import { StreamStatus }        from '../src/streams/stream.entity';
-import { NotFoundException }   from '@nestjs/common';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
 
 describe('StreamsService', () => {
   let service: StreamsService;
@@ -54,5 +54,81 @@ describe('StreamsService', () => {
     const results = await service.findAll(addr);
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results.every(s => s.sender === addr || s.recipient === addr)).toBe(true);
+  });
+
+  describe('findAllPaginated', () => {
+    const baseDto = {
+      sender: 'G' + 'A'.repeat(55), recipient: 'G' + 'B'.repeat(55),
+      token: 'native', startTime: 0, stopTime: 1000,
+    };
+
+    async function seed(count: number) {
+      for (let i = 0; i < count; i++) {
+        await service.create({ ...baseDto, ratePerSecond: i + 1 }, `tx-${i}`);
+      }
+    }
+
+    it('defaults to page 1 with a limit of 20', async () => {
+      await seed(25);
+      const result = await service.findAllPaginated(undefined);
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.total).toBe(25);
+      expect(result.data.length).toBe(20);
+    });
+
+    it('returns the remainder on the last page', async () => {
+      await seed(25);
+      const result = await service.findAllPaginated(undefined, { page: 2, limit: 20 });
+      expect(result.page).toBe(2);
+      expect(result.total).toBe(25);
+      expect(result.data.length).toBe(5);
+    });
+
+    it('sorts by ratePerSecond ascending when asked', async () => {
+      await seed(5);
+      const result = await service.findAllPaginated(undefined, { sortBy: 'ratePerSecond', order: 'asc', limit: 5 });
+      const rates = result.data.map(s => s.ratePerSecond);
+      expect(rates).toEqual([1n, 2n, 3n, 4n, 5n]);
+    });
+
+    it('sorts by ratePerSecond descending when asked', async () => {
+      await seed(5);
+      const result = await service.findAllPaginated(undefined, { sortBy: 'ratePerSecond', order: 'desc', limit: 5 });
+      const rates = result.data.map(s => s.ratePerSecond);
+      expect(rates).toEqual([5n, 4n, 3n, 2n, 1n]);
+    });
+
+    it('sorts by createdAt descending by default, newest first', async () => {
+      const older = await service.create({ ...baseDto, ratePerSecond: 1 }, 'tx-older');
+      const newer = await service.create({ ...baseDto, ratePerSecond: 2 }, 'tx-newer');
+      older.createdAt = new Date('2020-01-01T00:00:00.000Z');
+      newer.createdAt = new Date('2024-01-01T00:00:00.000Z');
+
+      const result = await service.findAllPaginated(undefined, { limit: 2 });
+      expect(result.data[0].id).toBe(newer.id);
+      expect(result.data[1].id).toBe(older.id);
+    });
+
+    it('still filters by address while paginating', async () => {
+      const addr = 'GADDR' + 'X'.repeat(51);
+      await service.create({ ...baseDto, sender: addr, ratePerSecond: 1 }, 'tx-a');
+      await seed(3);
+      const result = await service.findAllPaginated(addr, { limit: 10 });
+      expect(result.total).toBe(1);
+      expect(result.data[0].sender).toBe(addr);
+    });
+
+    it('rejects a page that is not a positive integer', async () => {
+      await expect(service.findAllPaginated(undefined, { page: 0 })).rejects.toThrow(BadRequestException);
+      await expect(service.findAllPaginated(undefined, { page: -1 })).rejects.toThrow(BadRequestException);
+      await expect(service.findAllPaginated(undefined, { page: 1.5 })).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a limit outside 1 to 100', async () => {
+      await expect(service.findAllPaginated(undefined, { limit: 0 })).rejects.toThrow(BadRequestException);
+      await expect(service.findAllPaginated(undefined, { limit: -5 })).rejects.toThrow(BadRequestException);
+      await expect(service.findAllPaginated(undefined, { limit: 101 })).rejects.toThrow(BadRequestException);
+    });
   });
 });
