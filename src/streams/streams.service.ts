@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { StreamEntity, StreamStatus }             from './stream.entity';
 import { CreateStreamDto }                        from './dto/create-stream.dto';
 import * as crypto from 'crypto';
@@ -8,6 +8,34 @@ interface ChainStreamData {
   sender:           string;
   recipient:        string;
   txHash:           string;
+}
+
+export type StreamSortField = 'createdAt' | 'startTime' | 'stopTime' | 'ratePerSecond';
+export type SortOrder = 'asc' | 'desc';
+
+export interface ListStreamsOptions {
+  page?:   number;
+  limit?:  number;
+  sortBy?: StreamSortField;
+  order?:  SortOrder;
+}
+
+export interface PaginatedStreams {
+  data:  StreamEntity[];
+  page:  number;
+  limit: number;
+  total: number;
+}
+
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT      = 100;
+
+function compareByField(a: StreamEntity, b: StreamEntity, field: StreamSortField): number {
+  const av = a[field];
+  const bv = b[field];
+  if (av instanceof Date && bv instanceof Date) return av.getTime() - bv.getTime();
+  if (typeof av === 'bigint' && typeof bv === 'bigint') return av < bv ? -1 : av > bv ? 1 : 0;
+  return Number(av) - Number(bv);
 }
 
 @Injectable()
