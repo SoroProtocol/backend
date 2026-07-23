@@ -1,7 +1,13 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { StreamEntity, StreamStatus }             from './stream.entity';
 import { CreateStreamDto }                        from './dto/create-stream.dto';
+import { CreateBatchStreamsDto, MAX_BATCH_SIZE }  from './dto/create-batch-streams.dto';
 import * as crypto from 'crypto';
+
+export interface BatchEntryFailure {
+  index:  number;
+  errors: string[];
+}
 
 interface ChainStreamData {
   contractStreamId: string;
@@ -65,6 +71,51 @@ export class StreamsService {
     this.byId.set(id, entity);
     this.logger.log(`Stream created: ${id}`);
     return entity;
+  }
+
+  /**
+   * Creates every stream in the batch under one sender, or none of them.
+   * Every entry is validated up front; if any entry is invalid the whole
+   * request is rejected with the full list of what failed and why, nothing
+   * gets created, rather than creating the good entries and silently
+   * dropping the bad ones.
+   */
+  async createBatch(dto: CreateBatchStreamsDto, txHash: string): Promise<StreamEntity[]> {
+    if (dto.recipients.length > MAX_BATCH_SIZE) {
+      throw new BadRequestException(`Batch size cannot exceed ${MAX_BATCH_SIZE} recipients, got ${dto.recipients.length}`);
+    }
+
+    const failures: BatchEntryFailure[] = [];
+    dto.recipients.forEach((entry, index) => {
+      const errors: string[] = [];
+      if (entry.stopTime <= entry.startTime) {
+        errors.push('stopTime must be after startTime');
+      }
+      if (errors.length > 0) {
+        failures.push({ index, errors });
+      }
+    });
+
+    if (failures.length > 0) {
+      throw new BadRequestException({
+        message: `${failures.length} of ${dto.recipients.length} entries failed validation`,
+        failures,
+      });
+    }
+
+    return Promise.all(
+      dto.recipients.map(entry => this.create(
+        {
+          sender:        dto.sender,
+          recipient:     entry.recipient,
+          token:         entry.token,
+          ratePerSecond: entry.ratePerSecond,
+          startTime:     entry.startTime,
+          stopTime:      entry.stopTime,
+        },
+        txHash,
+      )),
+    );
   }
 
   async upsertFromChain(data: ChainStreamData): Promise<StreamEntity> {

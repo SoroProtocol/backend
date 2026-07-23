@@ -97,6 +97,7 @@ SoroProtocol uses a challenge-response flow. Request a nonce, sign it with your 
 | `GET` | `/v1/streams/analytics?address={G...}` | Aggregate stats: total, active, cancelled, combined rate |
 | `GET` | `/v1/streams/:id` | Retrieve a single stream by ID |
 | `POST` | `/v1/streams` | Manually index a newly created stream |
+| `POST` | `/v1/streams/batch` | Index multiple streams from one sender at once (e.g. payroll), up to 100 recipients. Validates every entry before creating any of them — one bad entry rejects the whole batch and creates nothing |
 
 **Stream statuses:** `active` · `cancelled` · `completed`
 

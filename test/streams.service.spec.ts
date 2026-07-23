@@ -131,4 +131,79 @@ describe('StreamsService', () => {
       await expect(service.findAllPaginated(undefined, { limit: 101 })).rejects.toThrow(BadRequestException);
     });
   });
+
+  describe('createBatch', () => {
+    const sender = 'G' + 'S'.repeat(55);
+
+    function recipient(letter: string, overrides: Partial<{
+      token: string; ratePerSecond: number; startTime: number; stopTime: number;
+    }> = {}) {
+      return {
+        recipient: 'G' + letter.repeat(55),
+        token: 'native',
+        ratePerSecond: 100,
+        startTime: 1000,
+        stopTime: 2000,
+        ...overrides,
+      };
+    }
+
+    it('creates every stream in an all-valid batch', async () => {
+      const dto = { sender, recipients: [recipient('A'), recipient('B'), recipient('C')] };
+      const streams = await service.createBatch(dto, 'tx-batch-1');
+
+      expect(streams).toHaveLength(3);
+      expect(streams.every(s => s.sender === sender)).toBe(true);
+      expect(streams.map(s => s.recipient)).toEqual(dto.recipients.map(r => r.recipient));
+      expect(streams.every(s => s.status === StreamStatus.ACTIVE)).toBe(true);
+
+      const indexed = await service.findAll(sender);
+      expect(indexed.length).toBe(3);
+    });
+
+    it('rejects the whole batch and creates nothing when one entry has stopTime before startTime', async () => {
+      const dto = {
+        sender,
+        recipients: [
+          recipient('A'),
+          recipient('B', { startTime: 2000, stopTime: 1000 }), // the bad one
+          recipient('C'),
+        ],
+      };
+
+      await expect(service.createBatch(dto, 'tx-batch-2')).rejects.toThrow(BadRequestException);
+
+      const indexed = await service.findAll(sender);
+      expect(indexed.length).toBe(0);
+    });
+
+    it('reports the failing entry by index and reason', async () => {
+      const dto = {
+        sender,
+        recipients: [recipient('A'), recipient('B', { startTime: 2000, stopTime: 2000 })],
+      };
+
+      try {
+        await service.createBatch(dto, 'tx-batch-3');
+        fail('expected createBatch to throw');
+      } catch (err) {
+        const response = (err as BadRequestException).getResponse() as { failures: Array<{ index: number; errors: string[] }> };
+        expect(response.failures).toHaveLength(1);
+        expect(response.failures[0].index).toBe(1);
+        expect(response.failures[0].errors).toContain('stopTime must be after startTime');
+      }
+    });
+
+    it('rejects a batch over the 100-recipient cap', async () => {
+      const dto = {
+        sender,
+        recipients: Array.from({ length: 101 }, (_, i) => recipient('A', { ratePerSecond: i + 1 })),
+      };
+
+      await expect(service.createBatch(dto, 'tx-batch-4')).rejects.toThrow(BadRequestException);
+
+      const indexed = await service.findAll(sender);
+      expect(indexed.length).toBe(0);
+    });
+  });
 });
