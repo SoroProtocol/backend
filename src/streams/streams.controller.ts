@@ -5,6 +5,7 @@ import {
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { StreamsService }        from './streams.service';
 import { CreateStreamDto }       from './dto/create-stream.dto';
+import { CreateBatchStreamsDto } from './dto/create-batch-streams.dto';
 import { ListStreamsDto }        from './dto/list-streams.dto';
 
 const STELLAR_ADDR_RE = /^G[A-Z2-7]{55}$/;
@@ -55,5 +56,12 @@ export class StreamsController {
   @ApiOperation({ summary: 'Index a newly created stream' })
   async create(@Body() dto: CreateStreamDto) {
     return this.streams.create(dto, 'pending');
+  }
+
+  @Post('batch')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Index multiple streams from one sender at once, e.g. a payroll payout to several recipients. Validates every entry before creating any of them' })
+  async createBatch(@Body() dto: CreateBatchStreamsDto) {
+    return this.streams.createBatch(dto, 'pending');
   }
 }
