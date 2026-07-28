@@ -35,7 +35,7 @@ SoroProtocol API is a NestJS application that indexes Soroban smart contract eve
 ## Features
 
 - **Soroban Event Indexer** — polls the Soroban RPC every 5 seconds and processes `StreamCreated`, `Withdrawn`, and `Cancelled` contract events in real time
-- **REST API** — versioned endpoints (`/v1`) for streams, analytics, and webhooks
+- **REST API** — versioned endpoints (`/v1`) for streams, analytics, CSV export, and webhooks
 - **Webhook Delivery** — subscribe any URL to stream lifecycle events; retries with exponential backoff on failure
 - **Stellar Authentication** — stateless JWT auth using a cryptographic challenge signed by a Stellar keypair
 - **Auto-generated Docs** — interactive Swagger UI served at `/docs`
@@ -95,6 +95,7 @@ SoroProtocol uses a challenge-response flow. Request a nonce, sign it with your 
 |--------|----------|-------------|
 | `GET` | `/v1/streams` | List all indexed streams; filter by `?address={G...}` |
 | `GET` | `/v1/streams/analytics?address={G...}` | Aggregate stats: total, active, cancelled, combined rate |
+| `GET` | `/v1/streams/export?address={G...}` | Download stream history as a CSV attachment for the given address (`address` required) |
 | `GET` | `/v1/streams/:id` | Retrieve a single stream by ID |
 | `POST` | `/v1/streams` | Manually index a newly created stream |
 | `POST` | `/v1/streams/batch` | Index multiple streams from one sender at once (e.g. payroll), up to 100 recipients. Validates every entry before creating any of them — one bad entry rejects the whole batch and creates nothing |

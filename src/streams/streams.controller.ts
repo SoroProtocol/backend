@@ -1,12 +1,13 @@
 import {
-  Controller, Get, Post, Param, Body, Query,
+  Controller, Get, Post, Param, Body, Query, StreamableFile,
   HttpCode, HttpStatus, BadRequestException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { StreamsService }        from './streams.service';
 import { CreateStreamDto }       from './dto/create-stream.dto';
 import { CreateBatchStreamsDto } from './dto/create-batch-streams.dto';
 import { ListStreamsDto }        from './dto/list-streams.dto';
+import { ExportStreamsDto }      from './dto/export-streams.dto';
 
 const STELLAR_ADDR_RE = /^G[A-Z2-7]{55}$/;
 
@@ -43,6 +44,23 @@ export class StreamsController {
       .filter(s => s.status === 'active')
       .reduce((sum, s) => sum + s.ratePerSecond, 0n);
     return { total: all.length, active, cancelled, completed, totalRatePerSecond: totalRate.toString() };
+  }
+
+  @Get('export')
+  @ApiOperation({
+    summary: 'Download stream history as a CSV file for a Stellar address',
+    description:
+      'Returns matching streams (sender or recipient) as a CSV attachment. ' +
+      '`address` is required. `rate` and `withdrawn` are plain decimal strings. ' +
+      'An empty result set still returns a valid header-only CSV.',
+  })
+  @ApiProduces('text/csv')
+  async export(@Query() query: ExportStreamsDto): Promise<StreamableFile> {
+    const csv = await this.streams.exportCsv(query.address);
+    return new StreamableFile(Buffer.from(csv, 'utf-8'), {
+      type:        'text/csv; charset=utf-8',
+      disposition: 'attachment; filename="streams.csv"',
+    });
   }
 
   @Get(':id')

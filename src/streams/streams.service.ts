@@ -36,6 +36,14 @@ export interface PaginatedStreams {
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT      = 100;
 
+/** Escape a single CSV field per RFC 4180 (quote when needed). */
+function csvEscape(value: string): string {
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
 function compareByField(a: StreamEntity, b: StreamEntity, field: StreamSortField): number {
   const av = a[field];
   const bv = b[field];
@@ -147,6 +155,43 @@ export class StreamsService {
     const all = Array.from(this.byId.values());
     if (!address) return all;
     return all.filter(s => s.sender === address || s.recipient === address);
+  }
+
+  /**
+   * Builds a CSV document for every stream matching `address` (as sender or
+   * recipient). Bigint fields are emitted as plain decimal strings so the
+   * file opens cleanly in spreadsheet tools. An empty match set still yields
+   * a valid header-only CSV.
+   */
+  async exportCsv(address: string): Promise<string> {
+    const streams = await this.findAll(address);
+    const header = [
+      'id',
+      'sender',
+      'recipient',
+      'token',
+      'rate',
+      'startTime',
+      'stopTime',
+      'withdrawn',
+      'status',
+      'createdAt',
+    ];
+
+    const rows = streams.map(s => [
+      s.id,
+      s.sender,
+      s.recipient,
+      s.token,
+      s.ratePerSecond.toString(),
+      String(s.startTime),
+      String(s.stopTime),
+      s.withdrawn.toString(),
+      s.status,
+      s.createdAt.toISOString(),
+    ].map(csvEscape).join(','));
+
+    return [header.join(','), ...rows].join('\n') + '\n';
   }
 
   async findAllPaginated(address: string | undefined, options: ListStreamsOptions = {}): Promise<PaginatedStreams> {
