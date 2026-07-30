@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- CSV export endpoint for stream history (`GET /v1/streams/export`) (#10)
 - GraphQL API endpoint (#19)
 - Advanced stream analytics (#27)
 - PostgreSQL persistence layer

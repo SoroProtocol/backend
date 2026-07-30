@@ -132,6 +132,86 @@ describe('StreamsService', () => {
     });
   });
 
+  describe('exportCsv', () => {
+    const sender = 'G' + 'S'.repeat(55);
+    const recipient = 'G' + 'R'.repeat(55);
+    const other = 'G' + 'O'.repeat(55);
+
+    it('returns a header-only CSV when no streams match the address', async () => {
+      const csv = await service.exportCsv(sender);
+      expect(csv).toBe(
+        'id,sender,recipient,token,rate,startTime,stopTime,withdrawn,status,createdAt\n',
+      );
+    });
+
+    it('exports matching streams with bigint fields as plain decimal strings', async () => {
+      const stream = await service.create({
+        sender,
+        recipient,
+        token: 'native',
+        ratePerSecond: 100,
+        startTime: 1000,
+        stopTime: 2000,
+      }, 'tx-export-1');
+      // Mutate after create so we exercise values that exceed Number.MAX_SAFE_INTEGER
+      stream.ratePerSecond = 9007199254740993n;
+      await service.updateWithdrawn(stream.id, 12345678901234567890n);
+      stream.createdAt = new Date('2024-06-15T12:00:00.000Z');
+
+      const csv = await service.exportCsv(sender);
+      const lines = csv.trimEnd().split('\n');
+
+      expect(lines[0]).toBe(
+        'id,sender,recipient,token,rate,startTime,stopTime,withdrawn,status,createdAt',
+      );
+      expect(lines).toHaveLength(2);
+
+      const cols = lines[1].split(',');
+      expect(cols[0]).toBe(stream.id);
+      expect(cols[1]).toBe(sender);
+      expect(cols[2]).toBe(recipient);
+      expect(cols[3]).toBe('native');
+      expect(cols[4]).toBe('9007199254740993');
+      expect(cols[5]).toBe('1000');
+      expect(cols[6]).toBe('2000');
+      expect(cols[7]).toBe('12345678901234567890');
+      expect(cols[8]).toBe('active');
+      expect(cols[9]).toBe('2024-06-15T12:00:00.000Z');
+    });
+
+    it('only includes streams where the address is sender or recipient', async () => {
+      await service.create({
+        sender, recipient, token: 'native',
+        ratePerSecond: 1, startTime: 0, stopTime: 100,
+      }, 'tx-match');
+      await service.create({
+        sender: other, recipient: other, token: 'native',
+        ratePerSecond: 2, startTime: 0, stopTime: 100,
+      }, 'tx-other');
+
+      const csv = await service.exportCsv(sender);
+      const lines = csv.trimEnd().split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain(sender);
+      expect(lines[1]).not.toContain(other);
+    });
+
+    it('escapes CSV fields that contain commas or quotes', async () => {
+      const stream = await service.create({
+        sender,
+        recipient,
+        token: 'token,"quoted"',
+        ratePerSecond: 10,
+        startTime: 0,
+        stopTime: 100,
+      }, 'tx-escape');
+
+      const csv = await service.exportCsv(sender);
+      expect(csv).toContain('"token,""quoted"""');
+      expect(csv).toContain(stream.id);
+    });
+  });
+
   describe('createBatch', () => {
     const sender = 'G' + 'S'.repeat(55);
 
