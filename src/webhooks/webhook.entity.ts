@@ -13,3 +13,15 @@ export class WebhookSubscription {
   address:   string;
   createdAt: Date;
 }
+
+export class WebhookDelivery {
+  id:             string;
+  subscriptionId: string;
+  event:          WebhookEvent;
+  attempt:        number;
+  status:         'success' | 'failed';
+  httpStatus?:    number;
+  error?:         string;
+  durationMs:     number;
+  createdAt:      Date;
+}
