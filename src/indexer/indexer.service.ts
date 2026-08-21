@@ -54,6 +54,30 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // ── Status ──────────────────────────────────────────────────────────────────
+
+  getStatus() {
+    return {
+      lastIndexedLedger: this.lastIndexedLedger,
+      running:           this.running,
+    };
+  }
+
+  // ── Backfill ────────────────────────────────────────────────────────────────
+
+  async backfill(fromLedger: number, toLedger: number): Promise<{ processed: number; skipped: number }> {
+    const contractId = this.config.get<string>('STREAM_CONTRACT_ID');
+    if (!contractId) {
+      throw new Error('STREAM_CONTRACT_ID not configured');
+    }
+
+    const result = await this.fetchAndProcessEvents(fromLedger, toLedger, contractId);
+    this.logger.log(`Backfill ${fromLedger}–${toLedger}: ${result.processed} processed, ${result.skipped} skipped (dedup)`);
+    return result;
+  }
+
+  // ── Polling ─────────────────────────────────────────────────────────────────
+
   private async indexNewLedgers() {
     const server     = this.stellar.getSoroban();
     const latest     = (await server.getLatestLedger()).sequence;
@@ -67,34 +91,61 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       latest - LEDGERS_PER_PAGE,
     );
 
-    let response: SorobanRpc.Api.GetEventsResponse;
-    try {
-      response = await server.getEvents({
-        startLedger,
-        filters: [
-          {
-            type:        'contract',
-            contractIds: [contractId],
-            topics:      [
-              ['*'],  // match any topic[0] (event name)
-            ],
-          },
-        ],
-        limit: 200,
-      });
-    } catch (err) {
-      this.logger.warn(`getEvents failed (ledger ${startLedger}–${latest}): ${err}`);
-      return;
-    }
-
-    for (const event of response.events) {
-      await this.processEvent(event);
-    }
-
+    await this.fetchAndProcessEvents(startLedger, latest, contractId);
     this.lastIndexedLedger = latest;
-    if (response.events.length > 0) {
-      this.logger.log(`Indexed ${response.events.length} events up to ledger ${latest}`);
+  }
+
+  private async fetchAndProcessEvents(
+    startLedger: number,
+    endLedger: number,
+    contractId: string,
+  ): Promise<{ processed: number; skipped: number }> {
+    const server = this.stellar.getSoroban();
+    let processed = 0;
+    let skipped   = 0;
+    let cursor: string | undefined;
+
+    do {
+      let response: SorobanRpc.Api.GetEventsResponse;
+      try {
+        response = await server.getEvents({
+          startLedger,
+          filters: [
+            {
+              type:        'contract',
+              contractIds: [contractId],
+              topics:      [['*']],
+            },
+          ],
+          limit:      200,
+          ...(cursor ? { cursor } : {}),
+        });
+      } catch (err) {
+        this.logger.warn(`getEvents failed (ledger ${startLedger}–${endLedger}): ${err}`);
+        break;
+      }
+
+      for (const event of response.events) {
+        if (this.processedTxs.has(event.txHash)) {
+          skipped++;
+          continue;
+        }
+        await this.processEvent(event);
+        processed++;
+      }
+
+      // Soroban RPC returns a paging token on the last event for pagination
+      const lastEvent = response.events[response.events.length - 1];
+      cursor = response.events.length >= 200
+        ? (lastEvent as any).pagingToken ?? (lastEvent as any).cursor
+        : undefined;
+    } while (cursor);
+
+    if (processed > 0) {
+      this.logger.log(`Indexed ${processed} events (ledger ${startLedger}–${endLedger})`);
     }
+
+    return { processed, skipped };
   }
 
   private async processEvent(event: SorobanRpc.Api.EventResponse) {
