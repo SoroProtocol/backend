@@ -101,36 +101,45 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     contractId: string,
   ): Promise<{ processed: number; skipped: number }> {
     const server = this.stellar.getSoroban();
-
-    let response: SorobanRpc.Api.GetEventsResponse;
-    try {
-      response = await server.getEvents({
-        startLedger,
-        filters: [
-          {
-            type:        'contract',
-            contractIds: [contractId],
-            topics:      [['*']],
-          },
-        ],
-        limit: 200,
-      });
-    } catch (err) {
-      this.logger.warn(`getEvents failed (ledger ${startLedger}–${endLedger}): ${err}`);
-      return { processed: 0, skipped: 0 };
-    }
-
     let processed = 0;
     let skipped   = 0;
+    let cursor: string | undefined;
 
-    for (const event of response.events) {
-      if (this.processedTxs.has(event.txHash)) {
-        skipped++;
-        continue;
+    do {
+      let response: SorobanRpc.Api.GetEventsResponse;
+      try {
+        response = await server.getEvents({
+          startLedger,
+          filters: [
+            {
+              type:        'contract',
+              contractIds: [contractId],
+              topics:      [['*']],
+            },
+          ],
+          limit:      200,
+          ...(cursor ? { cursor } : {}),
+        });
+      } catch (err) {
+        this.logger.warn(`getEvents failed (ledger ${startLedger}–${endLedger}): ${err}`);
+        break;
       }
-      await this.processEvent(event);
-      processed++;
-    }
+
+      for (const event of response.events) {
+        if (this.processedTxs.has(event.txHash)) {
+          skipped++;
+          continue;
+        }
+        await this.processEvent(event);
+        processed++;
+      }
+
+      // Soroban RPC returns a paging token on the last event for pagination
+      const lastEvent = response.events[response.events.length - 1];
+      cursor = response.events.length >= 200
+        ? (lastEvent as any).pagingToken ?? (lastEvent as any).cursor
+        : undefined;
+    } while (cursor);
 
     if (processed > 0) {
       this.logger.log(`Indexed ${processed} events (ledger ${startLedger}–${endLedger})`);
