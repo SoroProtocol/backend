@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService }      from '@nestjs/config';
-import { WebhookEvent, WebhookSubscription } from './webhook.entity';
+import { WebhookEvent, WebhookSubscription, WebhookDelivery } from './webhook.entity';
 import * as crypto from 'crypto';
 
 @Injectable()
 export class WebhooksService {
   private readonly logger        = new Logger(WebhooksService.name);
   private readonly subscriptions = new Map<string, WebhookSubscription>();
+  private readonly deliveries    = new Map<string, WebhookDelivery>();
   private readonly MAX_RETRIES:  number;
   private readonly TIMEOUT_MS:   number;
 
@@ -45,6 +46,15 @@ export class WebhooksService {
     );
   }
 
+  getDeliveries(subscriptionId: string, page = 1, limit = 20): WebhookDelivery[] {
+    const all = Array.from(this.deliveries.values())
+      .filter(d => d.subscriptionId === subscriptionId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    const start = (page - 1) * limit;
+    return all.slice(start, start + limit);
+  }
+
   private async deliverWithRetry(
     sub: WebhookSubscription,
     event: WebhookEvent,
@@ -53,6 +63,7 @@ export class WebhooksService {
   ): Promise<void> {
     const body      = JSON.stringify({ event, data: payload, ts: Date.now() });
     const signature = this.sign(body, sub.secret);
+    const start     = Date.now();
 
     try {
       const controller = new AbortController();
@@ -69,9 +80,13 @@ export class WebhooksService {
       });
       clearTimeout(timer);
 
+      this.recordDelivery(sub.id, event, attempt, 'success', res.status, Date.now() - start);
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       this.logger.log(`Webhook delivered: ${event} → ${sub.url}`);
     } catch (err) {
+      this.recordDelivery(sub.id, event, attempt, 'failed', undefined, Date.now() - start, String(err));
+
       if (attempt < this.MAX_RETRIES - 1) {
         const jitter = Math.floor(crypto.randomInt(0, 500));
         const delay  = Math.pow(2, attempt) * 1000 + jitter;
@@ -81,6 +96,29 @@ export class WebhooksService {
       }
       this.logger.error(`Webhook failed after ${this.MAX_RETRIES} attempts: ${sub.url}`);
     }
+  }
+
+  private recordDelivery(
+    subscriptionId: string,
+    event:          WebhookEvent,
+    attempt:        number,
+    status:         'success' | 'failed',
+    httpStatus?:    number,
+    durationMs:     number = 0,
+    error?:         string,
+  ): void {
+    const delivery: WebhookDelivery = {
+      id:             crypto.randomUUID(),
+      subscriptionId,
+      event,
+      attempt,
+      status,
+      httpStatus,
+      error,
+      durationMs,
+      createdAt:      new Date(),
+    };
+    this.deliveries.set(delivery.id, delivery);
   }
 
   private sign(body: string, secret: string): string {
