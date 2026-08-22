@@ -26,6 +26,15 @@ export class WebhooksController {
     return this.webhooks.subscribe(dto.url, dto.events, dto.address);
   }
 
+  @Get()
+  @ApiOperation({ summary: 'List webhook subscriptions for an address' })
+  listSubscriptions(@Query('address') address: string) {
+    if (!address) {
+      return { ok: false, error: 'address query parameter is required' };
+    }
+    return this.webhooks.getSubscriptionsByAddress(address);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Unsubscribe from events' })
   unsubscribe(@Param('id') id: string) {

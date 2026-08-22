@@ -1,45 +1,59 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService }      from '@nestjs/config';
+import { DatabaseService }    from '../database/database.service';
 import { WebhookEvent, WebhookSubscription, WebhookDelivery } from './webhook.entity';
 import * as crypto from 'crypto';
 
 @Injectable()
 export class WebhooksService {
-  private readonly logger        = new Logger(WebhooksService.name);
-  private readonly subscriptions = new Map<string, WebhookSubscription>();
-  private readonly deliveries    = new Map<string, WebhookDelivery>();
-  private readonly MAX_RETRIES:  number;
-  private readonly TIMEOUT_MS:   number;
+  private readonly logger      = new Logger(WebhooksService.name);
+  private readonly MAX_RETRIES: number;
+  private readonly TIMEOUT_MS:  number;
 
-  constructor(private config: ConfigService) {
+  constructor(
+    private config: ConfigService,
+    private db: DatabaseService,
+  ) {
     this.MAX_RETRIES = config.get<number>('WEBHOOK_MAX_RETRIES', 3);
     this.TIMEOUT_MS  = config.get<number>('WEBHOOK_TIMEOUT_MS', 5000);
   }
 
   subscribe(url: string, events: WebhookEvent[], address: string): WebhookSubscription {
-    const existing = Array.from(this.subscriptions.values())
-      .find(s => s.url === url && s.address === address);
-    if (existing) return existing;
+    const existing = this.db.db
+      .prepare('SELECT * FROM webhook_subscriptions WHERE url = ? AND address = ?')
+      .get(url, address) as any;
+    if (existing) return this.rowToSubscription(existing);
 
-    const sub: WebhookSubscription = {
-      id:        crypto.randomUUID(),
-      url,
-      events,
-      secret:    crypto.randomBytes(32).toString('hex'),
-      address,
-      createdAt: new Date(),
-    };
-    this.subscriptions.set(sub.id, sub);
-    return sub;
+    const id     = crypto.randomUUID();
+    const secret = crypto.randomBytes(32).toString('hex');
+    const now    = new Date().toISOString();
+
+    this.db.db
+      .prepare('INSERT INTO webhook_subscriptions (id, url, events, secret, address, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, url, JSON.stringify(events), secret, address, now);
+
+    return { id, url, events, secret, address, createdAt: new Date(now) };
   }
 
   unsubscribe(id: string): boolean {
-    return this.subscriptions.delete(id);
+    const result = this.db.db
+      .prepare('DELETE FROM webhook_subscriptions WHERE id = ?')
+      .run(id);
+    return result.changes > 0;
+  }
+
+  getSubscriptionsByAddress(address: string): WebhookSubscription[] {
+    const rows = this.db.db
+      .prepare('SELECT * FROM webhook_subscriptions WHERE address = ? ORDER BY created_at DESC')
+      .all(address) as any[];
+    return rows.map(r => this.rowToSubscription(r));
   }
 
   async dispatch(event: WebhookEvent, payload: Record<string, unknown>): Promise<void> {
-    const targets = Array.from(this.subscriptions.values())
-      .filter(s => s.events.includes(event));
+    const rows = this.db.db
+      .prepare('SELECT * FROM webhook_subscriptions WHERE events LIKE ?')
+      .all(`%"${event}"%`) as any[];
+    const targets = rows.map(r => this.rowToSubscription(r));
 
     await Promise.allSettled(
       targets.map(sub => this.deliverWithRetry(sub, event, payload)),
@@ -47,12 +61,11 @@ export class WebhooksService {
   }
 
   getDeliveries(subscriptionId: string, page = 1, limit = 20): WebhookDelivery[] {
-    const all = Array.from(this.deliveries.values())
-      .filter(d => d.subscriptionId === subscriptionId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-    const start = (page - 1) * limit;
-    return all.slice(start, start + limit);
+    const offset = (page - 1) * limit;
+    const rows = this.db.db
+      .prepare('SELECT * FROM webhook_deliveries WHERE subscription_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(subscriptionId, limit, offset) as any[];
+    return rows.map(r => this.rowToDelivery(r));
   }
 
   private async deliverWithRetry(
@@ -107,21 +120,44 @@ export class WebhooksService {
     durationMs:     number = 0,
     error?:         string,
   ): void {
-    const delivery: WebhookDelivery = {
-      id:             crypto.randomUUID(),
-      subscriptionId,
-      event,
-      attempt,
-      status,
-      httpStatus,
-      error,
-      durationMs,
-      createdAt:      new Date(),
-    };
-    this.deliveries.set(delivery.id, delivery);
+    const id  = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    this.db.db
+      .prepare(
+        `INSERT INTO webhook_deliveries
+           (id, subscription_id, event, attempt, status, http_status, error, duration_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, subscriptionId, event, attempt, status, httpStatus ?? null, error ?? null, durationMs, now);
   }
 
   private sign(body: string, secret: string): string {
     return crypto.createHmac('sha256', secret).update(body).digest('hex');
+  }
+
+  private rowToSubscription(row: any): WebhookSubscription {
+    return {
+      id:        row.id,
+      url:       row.url,
+      events:    JSON.parse(row.events),
+      secret:    row.secret,
+      address:   row.address,
+      createdAt: new Date(row.created_at),
+    };
+  }
+
+  private rowToDelivery(row: any): WebhookDelivery {
+    return {
+      id:             row.id,
+      subscriptionId: row.subscription_id,
+      event:          row.event,
+      attempt:        row.attempt,
+      status:         row.status,
+      httpStatus:     row.http_status,
+      error:          row.error,
+      durationMs:     row.duration_ms,
+      createdAt:      new Date(row.created_at),
+    };
   }
 }
