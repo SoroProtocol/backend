@@ -1,8 +1,10 @@
-import { Controller, Post, Delete, Get, Body, Param, Query } from '@nestjs/common';
+import { Controller, Post, Delete, Get, Body, Param, Query, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ApiTags, ApiOperation }                               from '@nestjs/swagger';
 import { WebhooksService }                                     from './webhooks.service';
 import { WebhookEvent }                                        from './webhook.entity';
 import { IsString, IsArray, IsUrl }                            from 'class-validator';
+
+const STELLAR_ADDR_RE = /^G[A-Z2-7]{55}$/;
 
 class SubscribeDto {
   @IsString() @IsUrl()
@@ -23,21 +25,31 @@ export class WebhooksController {
   @Post('subscribe')
   @ApiOperation({ summary: 'Subscribe to stream events' })
   subscribe(@Body() dto: SubscribeDto) {
+    if (!STELLAR_ADDR_RE.test(dto.address)) {
+      throw new BadRequestException('address must be a valid Stellar G-address');
+    }
     return this.webhooks.subscribe(dto.url, dto.events, dto.address);
   }
 
   @Get()
   @ApiOperation({ summary: 'List webhook subscriptions for an address' })
   listSubscriptions(@Query('address') address: string) {
-    if (!address) {
-      return { ok: false, error: 'address query parameter is required' };
+    if (!address || !STELLAR_ADDR_RE.test(address)) {
+      throw new BadRequestException('address must be a valid Stellar G-address');
     }
     return this.webhooks.getSubscriptionsByAddress(address);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Unsubscribe from events' })
-  unsubscribe(@Param('id') id: string) {
+  unsubscribe(@Param('id') id: string, @Query('address') address: string) {
+    if (!address || !STELLAR_ADDR_RE.test(address)) {
+      throw new BadRequestException('address query parameter is required for ownership verification');
+    }
+    const sub = this.webhooks.getSubscriptionById(id);
+    if (!sub || sub.address !== address) {
+      throw new NotFoundException('Subscription not found');
+    }
     const removed = this.webhooks.unsubscribe(id);
     return { success: removed };
   }

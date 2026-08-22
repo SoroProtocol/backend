@@ -49,7 +49,18 @@ export class WebhooksService {
     return rows.map(r => this.rowToSubscription(r));
   }
 
+  getSubscriptionById(id: string): WebhookSubscription | null {
+    const row = this.db.db
+      .prepare('SELECT * FROM webhook_subscriptions WHERE id = ?')
+      .get(id) as any;
+    return row ? this.rowToSubscription(row) : null;
+  }
+
   async dispatch(event: WebhookEvent, payload: Record<string, unknown>): Promise<void> {
+    // NOTE: LIKE with JSON-escaped event names works because our event names
+    // use dots (e.g. "stream.created") which don't collide with JSON syntax.
+    // If event names ever gain prefixes that share substrings, switch to a
+    // junction table (webhook_subscription_events) for exact matching.
     const rows = this.db.db
       .prepare('SELECT * FROM webhook_subscriptions WHERE events LIKE ?')
       .all(`%"${event}"%`) as any[];
