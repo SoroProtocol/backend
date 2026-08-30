@@ -3,6 +3,7 @@ import { ConfigService }       from '@nestjs/config';
 import { IndexerService }      from '../src/indexer/indexer.service';
 import { StellarService }      from '../src/stellar/stellar.service';
 import { StreamsService }      from '../src/streams/streams.service';
+import { VestingService }      from '../src/vesting/vesting.service';
 import { WebhooksService }     from '../src/webhooks/webhooks.service';
 import { WebhookEvent }        from '../src/webhooks/webhook.entity';
 import { SorobanRpc, nativeToScVal } from '@stellar/stellar-sdk';
@@ -31,10 +32,30 @@ describe('IndexerService', () => {
   let service: IndexerService;
   let mockGetEvents: jest.Mock;
   let mockDispatch: jest.Mock;
+  let mockVesting: {
+    upsertFromChain: jest.Mock;
+    updateClaimedByContractId: jest.Mock;
+    updateRevokedByContractId: jest.Mock;
+  };
+  let mockStreams: {
+    upsertFromChain: jest.Mock;
+    updateWithdrawnByContractId: jest.Mock;
+    updateStatusByContractId: jest.Mock;
+  };
 
   beforeEach(async () => {
     mockGetEvents = jest.fn();
     mockDispatch = jest.fn().mockResolvedValue(undefined);
+    mockVesting = {
+      upsertFromChain: jest.fn().mockResolvedValue(undefined),
+      updateClaimedByContractId: jest.fn().mockResolvedValue(undefined),
+      updateRevokedByContractId: jest.fn().mockResolvedValue(undefined),
+    };
+    mockStreams = {
+      upsertFromChain: jest.fn().mockResolvedValue(undefined),
+      updateWithdrawnByContractId: jest.fn().mockResolvedValue(undefined),
+      updateStatusByContractId: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -45,11 +66,11 @@ describe('IndexerService', () => {
         },
         {
           provide: StreamsService,
-          useValue: {
-            upsertFromChain: jest.fn().mockResolvedValue(undefined),
-            updateWithdrawnByContractId: jest.fn().mockResolvedValue(undefined),
-            updateStatusByContractId: jest.fn().mockResolvedValue(undefined),
-          },
+          useValue: mockStreams,
+        },
+        {
+          provide: VestingService,
+          useValue: mockVesting,
         },
         {
           provide: WebhooksService,
@@ -59,6 +80,7 @@ describe('IndexerService', () => {
           provide: ConfigService,
           useValue: { get: (key: string, def?: unknown) => {
             if (key === 'STREAM_CONTRACT_ID') return 'CSTREAM123456789012345678901234567890123456789012345678';
+            if (key === 'VESTING_CONTRACT_ID') return 'CVESTING12345678901234567890123456789012345678901234567';
             if (key === 'NODE_ENV') return 'test';
             return def;
           }},
@@ -74,7 +96,7 @@ describe('IndexerService', () => {
     expect(status).toEqual({ lastIndexedLedger: 0, running: false });
   });
 
-  it('backfills events and dispatches webhooks', async () => {
+  it('backfills stream events and dispatches webhooks', async () => {
     mockGetEvents.mockResolvedValue({
       events: [
         fakeEvent('tx001', 'StreamCreated', [1n, 'GA...', 'GB...', 100n]),
@@ -86,9 +108,38 @@ describe('IndexerService', () => {
 
     expect(result.processed).toBe(2);
     expect(result.skipped).toBe(0);
+    expect(mockStreams.upsertFromChain).toHaveBeenCalledWith(expect.objectContaining({
+      contractStreamId: '1',
+      sender: 'GA...',
+      recipient: 'GB...',
+    }));
+    expect(mockStreams.updateWithdrawnByContractId).toHaveBeenCalledWith('1', 50n);
     expect(mockDispatch).toHaveBeenCalledTimes(2);
     expect(mockDispatch).toHaveBeenCalledWith(WebhookEvent.STREAM_CREATED, expect.objectContaining({ streamId: '1' }));
     expect(mockDispatch).toHaveBeenCalledWith(WebhookEvent.STREAM_WITHDRAWN, expect.objectContaining({ streamId: '1' }));
+  });
+
+  it('backfills vesting events (VestingCreated, VestingClaimed, VestingRevoked)', async () => {
+    mockGetEvents.mockResolvedValue({
+      events: [
+        fakeEvent('tx010', 'VestingCreated', [10n, 'GFUNDER...', 'GBENEFICIARY...', 'native', 1000n, 100n, 200n, 300n]),
+        fakeEvent('tx011', 'VestingClaimed', [10n, 250n]),
+        fakeEvent('tx012', 'VestingRevoked', [10n]),
+      ],
+    });
+
+    const result = await service.backfill(100, 200);
+
+    expect(result.processed).toBe(3);
+    expect(mockVesting.upsertFromChain).toHaveBeenCalledWith(expect.objectContaining({
+      contractScheduleId: '10',
+      funder: 'GFUNDER...',
+      beneficiary: 'GBENEFICIARY...',
+      token: 'native',
+      totalAmount: 1000n,
+    }));
+    expect(mockVesting.updateClaimedByContractId).toHaveBeenCalledWith('10', 250n);
+    expect(mockVesting.updateRevokedByContractId).toHaveBeenCalledWith('10', true);
   });
 
   it('skips already-processed transactions on overlapping backfill', async () => {
@@ -124,6 +175,7 @@ describe('IndexerService', () => {
         IndexerService,
         { provide: StellarService, useValue: {} },
         { provide: StreamsService, useValue: {} },
+        { provide: VestingService, useValue: {} },
         { provide: WebhooksService, useValue: {} },
         { provide: ConfigService, useValue: { get: () => undefined } },
       ],

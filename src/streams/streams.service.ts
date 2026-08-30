@@ -1,7 +1,25 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
-import { StreamEntity, StreamStatus }             from './stream.entity';
-import { CreateStreamDto }                        from './dto/create-stream.dto';
-import { CreateBatchStreamsDto, MAX_BATCH_SIZE }  from './dto/create-batch-streams.dto';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+  Optional,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
+import { StreamEntity, StreamStatus } from './stream.entity';
+import { CreateStreamDto } from './dto/create-stream.dto';
+import { CreateBatchStreamsDto, MAX_BATCH_SIZE } from './dto/create-batch-streams.dto';
+import { StellarService } from '../stellar/stellar.service';
+import {
+  Account,
+  TransactionBuilder,
+  Operation,
+  SorobanRpc,
+  scValToNative,
+  nativeToScVal,
+} from '@stellar/stellar-sdk';
 import * as crypto from 'crypto';
 
 export interface BatchEntryFailure {
@@ -9,10 +27,16 @@ export interface BatchEntryFailure {
   errors: string[];
 }
 
-interface ChainStreamData {
+export interface ChainStreamData {
   contractStreamId: string;
   sender:           string;
   recipient:        string;
+  token?:           string;
+  ratePerSecond?:   bigint | number | string;
+  startTime?:       number;
+  stopTime?:        number;
+  withdrawn?:       bigint | number | string;
+  status?:          StreamStatus;
   txHash:           string;
 }
 
@@ -55,30 +79,32 @@ function compareByField(a: StreamEntity, b: StreamEntity, field: StreamSortField
 @Injectable()
 export class StreamsService {
   private readonly logger = new Logger(StreamsService.name);
-  // In production: swap with TypeORM / Prisma repository injection
-  private readonly byId:         Map<string, StreamEntity>   = new Map();
-  private readonly byContractId: Map<string, StreamEntity>   = new Map();
+
+  constructor(
+    @InjectRepository(StreamEntity)
+    private readonly repo: Repository<StreamEntity>,
+    @Optional()
+    private readonly stellar?: StellarService,
+    @Optional()
+    private readonly config?: ConfigService,
+  ) {}
 
   async create(dto: CreateStreamDto, txHash: string): Promise<StreamEntity> {
-    const id = `stream-${crypto.randomUUID()}`;
-    const entity: StreamEntity = {
-      id,
-      contractStreamId: '0',
+    const entity = this.repo.create({
+      contractStreamId: undefined,
       sender:           dto.sender,
       recipient:        dto.recipient,
-      token:            dto.token,
+      token:            dto.token || 'native',
       ratePerSecond:    BigInt(dto.ratePerSecond),
       startTime:        dto.startTime,
       stopTime:         dto.stopTime,
       withdrawn:        0n,
       status:           StreamStatus.ACTIVE,
-      txHash,
-      createdAt:        new Date(),
-      updatedAt:        new Date(),
-    };
-    this.byId.set(id, entity);
-    this.logger.log(`Stream created: ${id}`);
-    return entity;
+      txHash:           txHash || '',
+    });
+    const saved = await this.repo.save(entity);
+    this.logger.log(`Stream created: ${saved.id}`);
+    return saved;
   }
 
   /**
@@ -111,8 +137,9 @@ export class StreamsService {
       });
     }
 
-    return Promise.all(
-      dto.recipients.map(entry => this.create(
+    const created: StreamEntity[] = [];
+    for (const entry of dto.recipients) {
+      const stream = await this.create(
         {
           sender:        dto.sender,
           recipient:     entry.recipient,
@@ -122,39 +149,56 @@ export class StreamsService {
           stopTime:      entry.stopTime,
         },
         txHash,
-      )),
-    );
+      );
+      created.push(stream);
+    }
+    return created;
   }
 
   async upsertFromChain(data: ChainStreamData): Promise<StreamEntity> {
-    const existing = this.byContractId.get(data.contractStreamId);
-    if (existing) return existing;
+    const existing = await this.repo.findOne({
+      where: { contractStreamId: data.contractStreamId },
+    });
 
-    const id = `chain-${data.contractStreamId}`;
-    const entity: StreamEntity = {
-      id,
+    if (existing) {
+      if (data.sender) existing.sender = data.sender;
+      if (data.recipient) existing.recipient = data.recipient;
+      if (data.token) existing.token = data.token;
+      if (data.ratePerSecond !== undefined) existing.ratePerSecond = BigInt(data.ratePerSecond);
+      if (data.startTime !== undefined) existing.startTime = Number(data.startTime);
+      if (data.stopTime !== undefined) existing.stopTime = Number(data.stopTime);
+      if (data.withdrawn !== undefined) existing.withdrawn = BigInt(data.withdrawn);
+      if (data.status) existing.status = data.status;
+      if (data.txHash) existing.txHash = data.txHash;
+      return this.repo.save(existing);
+    }
+
+    const entity = this.repo.create({
       contractStreamId: data.contractStreamId,
       sender:           data.sender,
       recipient:        data.recipient,
-      token:            'native',
-      ratePerSecond:    0n,
-      startTime:        0,
-      stopTime:         0,
-      withdrawn:        0n,
-      status:           StreamStatus.ACTIVE,
-      txHash:           data.txHash,
-      createdAt:        new Date(),
-      updatedAt:        new Date(),
-    };
-    this.byId.set(id, entity);
-    this.byContractId.set(data.contractStreamId, entity);
-    return entity;
+      token:            data.token || 'native',
+      ratePerSecond:    data.ratePerSecond !== undefined ? BigInt(data.ratePerSecond) : 0n,
+      startTime:        data.startTime !== undefined ? Number(data.startTime) : 0,
+      stopTime:         data.stopTime !== undefined ? Number(data.stopTime) : 0,
+      withdrawn:        data.withdrawn !== undefined ? BigInt(data.withdrawn) : 0n,
+      status:           data.status || StreamStatus.ACTIVE,
+      txHash:           data.txHash || '',
+    });
+    return this.repo.save(entity);
   }
 
   async findAll(address?: string): Promise<StreamEntity[]> {
-    const all = Array.from(this.byId.values());
-    if (!address) return all;
-    return all.filter(s => s.sender === address || s.recipient === address);
+    if (!address) {
+      return this.repo.find({ order: { createdAt: 'DESC' } });
+    }
+    return this.repo.find({
+      where: [
+        { sender: address },
+        { recipient: address },
+      ],
+      order: { createdAt: 'DESC' },
+    });
   }
 
   /**
@@ -188,7 +232,7 @@ export class StreamsService {
       String(s.stopTime),
       s.withdrawn.toString(),
       s.status,
-      s.createdAt.toISOString(),
+      s.createdAt instanceof Date ? s.createdAt.toISOString() : new Date(s.createdAt).toISOString(),
     ].map(csvEscape).join(','));
 
     return [header.join(','), ...rows].join('\n') + '\n';
@@ -220,44 +264,96 @@ export class StreamsService {
   }
 
   async findOne(id: string): Promise<StreamEntity> {
-    const stream = this.byId.get(id);
-    if (!stream) throw new NotFoundException(`Stream ${id} not found`);
-    return stream;
+    const conditions: any[] = [{ contractStreamId: id }];
+    conditions.push({ id });
+
+    const stream = await this.repo.findOne({ where: conditions });
+    if (stream) return stream;
+
+    const fromRpc = await this.fetchStreamFromRpc(id);
+    if (fromRpc) return fromRpc;
+
+    throw new NotFoundException(`Stream ${id} not found`);
+  }
+
+  private async fetchStreamFromRpc(id: string): Promise<StreamEntity | null> {
+    if (!this.stellar || !this.config) return null;
+    const contractId = this.config.get<string>('STREAM_CONTRACT_ID');
+    if (!contractId) return null;
+
+    try {
+      const server = this.stellar.getSoroban();
+      const numericId = BigInt(id.replace(/\D/g, '') || '0');
+      const dummyAccount = new Account('GDPUCBX5NO5TGKFQVCUVJCJ55FD7FJF4X6O2ASPGLIZTDM4J5HJLSKMZ', '0');
+
+      const tx = new TransactionBuilder(dummyAccount, {
+        fee: '100',
+        networkPassphrase: this.stellar.getNetwork(),
+      })
+        .addOperation(
+          Operation.invokeContractFunction({
+            contract: contractId,
+            function: 'get_stream',
+            args: [nativeToScVal(numericId, { type: 'u64' })],
+          })
+        )
+        .setTimeout(30)
+        .build();
+
+      const sim = await server.simulateTransaction(tx);
+      const retval = (sim as any)?.result?.retval;
+      if (retval) {
+        const val: any = scValToNative(retval);
+        if (val) {
+          return await this.upsertFromChain({
+            contractStreamId: id,
+            sender:           val.sender ?? val[1] ?? '',
+            recipient:        val.recipient ?? val[2] ?? '',
+            token:            val.token ?? val[3] ?? 'native',
+            ratePerSecond:    val.rate_per_second ?? val.ratePerSecond ?? val[4] ?? 0n,
+            startTime:        Number(val.start_time ?? val.startTime ?? val[5] ?? 0),
+            stopTime:         Number(val.stop_time ?? val.stopTime ?? val[6] ?? 0),
+            withdrawn:        BigInt(val.withdrawn ?? val[7] ?? 0n),
+            status:           val.status ?? StreamStatus.ACTIVE,
+            txHash:           'chain-rpc',
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.debug(`RPC fallback failed for stream ${id}: ${err}`);
+    }
+    return null;
   }
 
   async updateStatus(id: string, status: StreamStatus): Promise<StreamEntity> {
-    const s  = await this.findOne(id);
-    s.status    = status;
-    s.updatedAt = new Date();
-    this.byId.set(id, s);
-    return s;
+    const s = await this.findOne(id);
+    s.status = status;
+    return this.repo.save(s);
   }
 
-  async updateStatusByContractId(contractStreamId: string, status: StreamStatus) {
-    const s = this.byContractId.get(contractStreamId);
+  async updateStatusByContractId(contractStreamId: string, status: StreamStatus): Promise<StreamEntity | null> {
+    const s = await this.repo.findOne({ where: { contractStreamId } });
     if (!s) {
       this.logger.warn(`updateStatusByContractId: unknown contractStreamId ${contractStreamId}`);
-      return;
+      return null;
     }
-    s.status    = status;
-    s.updatedAt = new Date();
+    s.status = status;
+    return this.repo.save(s);
   }
 
   async updateWithdrawn(id: string, amount: bigint): Promise<StreamEntity> {
-    const s  = await this.findOne(id);
-    s.withdrawn  = amount;
-    s.updatedAt  = new Date();
-    this.byId.set(id, s);
-    return s;
+    const s = await this.findOne(id);
+    s.withdrawn = amount;
+    return this.repo.save(s);
   }
 
-  async updateWithdrawnByContractId(contractStreamId: string, amount: bigint) {
-    const s = this.byContractId.get(contractStreamId);
+  async updateWithdrawnByContractId(contractStreamId: string, amount: bigint): Promise<StreamEntity | null> {
+    const s = await this.repo.findOne({ where: { contractStreamId } });
     if (!s) {
       this.logger.warn(`updateWithdrawnByContractId: unknown contractStreamId ${contractStreamId}`);
-      return;
+      return null;
     }
-    s.withdrawn  = amount;
-    s.updatedAt  = new Date();
+    s.withdrawn = amount;
+    return this.repo.save(s);
   }
 }
