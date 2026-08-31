@@ -1,14 +1,84 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken }   from '@nestjs/typeorm';
 import { StreamsService }      from '../src/streams/streams.service';
-import { StreamStatus }        from '../src/streams/stream.entity';
+import { StreamEntity, StreamStatus } from '../src/streams/stream.entity';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
+
+function mockRepo<T extends { id?: any; createdAt?: any; updatedAt?: any }>() {
+  const store: T[] = [];
+  let nextId = 1;
+  return {
+    find: jest.fn().mockImplementation((opts?: any) => {
+      let result = [...store];
+      if (opts?.where) {
+        if (Array.isArray(opts.where)) {
+          result = result.filter((r: any) =>
+            opts.where.some((cond: any) =>
+              Object.entries(cond).every(([k, v]) => r[k] === v),
+            ),
+          );
+        } else {
+          result = result.filter((r: any) =>
+            Object.entries(opts.where).every(([k, v]) => r[k] === v),
+          );
+        }
+      }
+      if (opts?.order?.createdAt === 'DESC') {
+        result.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      }
+      if (opts?.skip) result = result.slice(opts.skip);
+      if (opts?.take) result = result.slice(0, opts.take);
+      return Promise.resolve(result);
+    }),
+    findOne: jest.fn().mockImplementation((opts?: any) => {
+      if (!opts?.where) return Promise.resolve(null);
+      if (Array.isArray(opts.where)) {
+        for (const cond of opts.where) {
+          const found = store.find((r: any) =>
+            Object.entries(cond).every(([k, v]) => r[k] === v || (k === 'id' && String(r.id) === String(v))),
+          );
+          if (found) return Promise.resolve(found);
+        }
+        return Promise.resolve(null);
+      }
+      const found = store.find((r: any) =>
+        Object.entries(opts.where).every(([k, v]) => r[k] === v || (k === 'id' && String(r.id) === String(v))),
+      );
+      return Promise.resolve(found ?? null);
+    }),
+    create: jest.fn().mockImplementation((data: any) => ({
+      ...data,
+      id: String(data.id ?? nextId++),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })),
+    save: jest.fn().mockImplementation((entity: any) => {
+      if (!entity.id) entity.id = String(nextId++);
+      if (!entity.createdAt) entity.createdAt = new Date();
+      entity.updatedAt = new Date();
+      const idx = store.findIndex((r: any) => String(r.id) === String(entity.id));
+      if (idx >= 0) store[idx] = entity;
+      else store.push(entity);
+      return Promise.resolve(entity);
+    }),
+    _store: store,
+  };
+}
 
 describe('StreamsService', () => {
   let service: StreamsService;
+  let repo: ReturnType<typeof mockRepo>;
 
   beforeEach(async () => {
+    repo = mockRepo<StreamEntity>();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [StreamsService],
+      providers: [
+        StreamsService,
+        {
+          provide:  getRepositoryToken(StreamEntity),
+          useValue: repo,
+        },
+      ],
     }).compile();
     service = module.get<StreamsService>(StreamsService);
   });
@@ -284,6 +354,69 @@ describe('StreamsService', () => {
 
       const indexed = await service.findAll(sender);
       expect(indexed.length).toBe(0);
+    });
+  });
+
+  describe('upsertFromChain & updates', () => {
+    it('upserts a stream from on-chain event data', async () => {
+      const stream = await service.upsertFromChain({
+        contractStreamId: '100',
+        sender: 'G' + 'A'.repeat(55),
+        recipient: 'G' + 'B'.repeat(55),
+        token: 'native',
+        ratePerSecond: 500n,
+        startTime: 1000,
+        stopTime: 2000,
+        txHash: 'tx-chain-1',
+      });
+
+      expect(stream.contractStreamId).toBe('100');
+      expect(stream.ratePerSecond).toBe(500n);
+
+      const updated = await service.updateWithdrawnByContractId('100', 250n);
+      expect(updated?.withdrawn).toBe(250n);
+
+      const cancelled = await service.updateStatusByContractId('100', StreamStatus.CANCELLED);
+      expect(cancelled?.status).toBe(StreamStatus.CANCELLED);
+    });
+  });
+
+  describe('RPC fallback', () => {
+    it('falls back to Soroban RPC when stream not in DB', async () => {
+      const { nativeToScVal, SorobanRpc } = require('@stellar/stellar-sdk');
+      const scValRetval = nativeToScVal({
+        sender: 'G' + 'A'.repeat(55),
+        recipient: 'G' + 'B'.repeat(55),
+        token: 'native',
+        rate_per_second: 100n,
+        start_time: 1000n,
+        stop_time: 2000n,
+        withdrawn: 0n,
+        status: 'active',
+      });
+
+      const mockSimulate = jest.fn().mockResolvedValue({
+        result: {
+          retval: scValRetval,
+        },
+      });
+
+      const dummyStellar = {
+        getSoroban: () => ({
+          simulateTransaction: mockSimulate,
+        }),
+        getNetwork: () => 'Test SDF Network ; September 2015',
+      };
+      const dummyConfig = {
+        get: (key: string) => key === 'STREAM_CONTRACT_ID' ? 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4' : undefined,
+      };
+
+      const svcWithRpc = new StreamsService(repo as any, dummyStellar as any, dummyConfig as any);
+      jest.spyOn(SorobanRpc.Api, 'isSimulationSuccess').mockReturnValue(true);
+
+      const result = await svcWithRpc.findOne('999');
+      expect(result.contractStreamId).toBe('999');
+      expect(result.sender).toBe('G' + 'A'.repeat(55));
     });
   });
 });
