@@ -15,6 +15,7 @@ describe('StreamsController export', () => {
       findOne: jest.fn(),
       create: jest.fn(),
       createBatch: jest.fn(),
+      extendStopTime: jest.fn(),
     } as any;
 
     const module: TestingModule = await Test.createTestingModule({
@@ -79,5 +80,12 @@ describe('StreamsController export', () => {
     (service.findOne as jest.Mock).mockResolvedValue({ id: 'stream-123', status: 'active' });
     const result = await controller.findOne('stream-123');
     expect(result).toEqual({ id: 'stream-123', status: 'active' });
+  });
+
+  it('extends stopTime for a stream', async () => {
+    (service.extendStopTime as jest.Mock).mockResolvedValue({ id: 'stream-123', stopTime: 5000 });
+    const result = await controller.extend('stream-123', { newStopTime: 5000 });
+    expect(service.extendStopTime).toHaveBeenCalledWith('stream-123', 5000);
+    expect(result).toEqual({ id: 'stream-123', stopTime: 5000 });
   });
 });

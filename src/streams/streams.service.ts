@@ -356,4 +356,24 @@ export class StreamsService {
     s.withdrawn = amount;
     return this.repo.save(s);
   }
+
+  /**
+   * Extends the stopTime of an active stream.
+   * Throws BadRequestException if the stream is not active or if newStopTime is not greater than current stopTime.
+   */
+  async extendStopTime(id: string, newStopTime: number): Promise<StreamEntity> {
+    const s = await this.findOne(id);
+    if (s.status !== StreamStatus.ACTIVE) {
+      throw new BadRequestException(`Cannot extend stream with status '${s.status}'. Only active streams can be extended.`);
+    }
+    if (newStopTime <= s.stopTime) {
+      throw new BadRequestException(
+        `newStopTime (${newStopTime}) must be strictly greater than current stopTime (${s.stopTime})`,
+      );
+    }
+    s.stopTime = newStopTime;
+    const updated = await this.repo.save(s);
+    this.logger.log(`Stream ${id} stopTime extended to ${newStopTime}`);
+    return updated;
+  }
 }
