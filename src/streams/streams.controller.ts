@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Param, Body, Query, StreamableFile,
+  Controller, Get, Post, Patch, Param, Body, Query, StreamableFile,
   HttpCode, HttpStatus, BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProduces } from '@nestjs/swagger';
@@ -8,6 +8,7 @@ import { CreateStreamDto }       from './dto/create-stream.dto';
 import { CreateBatchStreamsDto } from './dto/create-batch-streams.dto';
 import { ListStreamsDto }        from './dto/list-streams.dto';
 import { ExportStreamsDto }      from './dto/export-streams.dto';
+import { ExtendStreamDto }      from './dto/extend-stream.dto';
 
 const STELLAR_ADDR_RE = /^G[A-Z2-7]{55}$/;
 
@@ -81,5 +82,18 @@ export class StreamsController {
   @ApiOperation({ summary: 'Index multiple streams from one sender at once, e.g. a payroll payout to several recipients. Validates every entry before creating any of them' })
   async createBatch(@Body() dto: CreateBatchStreamsDto) {
     return this.streams.createBatch(dto, 'pending');
+  }
+
+  @Patch(':id/extend')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Extend a stream's stopTime",
+    description: "Extends the duration of an active stream by updating its stopTime to a new, greater timestamp."
+  })
+  async extend(
+    @Param('id') id: string,
+    @Body() dto: ExtendStreamDto,
+  ) {
+    return this.streams.extendStopTime(id, dto.newStopTime);
   }
 }

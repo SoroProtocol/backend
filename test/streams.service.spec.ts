@@ -419,4 +419,51 @@ describe('StreamsService', () => {
       expect(result.sender).toBe('G' + 'A'.repeat(55));
     });
   });
+
+  describe('extendStopTime', () => {
+    it('successfully extends stopTime of an active stream', async () => {
+      const created = await service.create({
+        sender: 'G' + 'A'.repeat(55),
+        recipient: 'G' + 'B'.repeat(55),
+        token: 'native',
+        ratePerSecond: 10,
+        startTime: 1000,
+        stopTime: 2000,
+      }, 'tx-extend-test');
+
+      const updated = await service.extendStopTime(created.id, 3000);
+      expect(updated.stopTime).toBe(3000);
+
+      const fetched = await service.findOne(created.id);
+      expect(fetched.stopTime).toBe(3000);
+    });
+
+    it('rejects newStopTime that is not strictly greater than current stopTime', async () => {
+      const created = await service.create({
+        sender: 'G' + 'A'.repeat(55),
+        recipient: 'G' + 'B'.repeat(55),
+        token: 'native',
+        ratePerSecond: 10,
+        startTime: 1000,
+        stopTime: 2000,
+      }, 'tx-extend-test-2');
+
+      await expect(service.extendStopTime(created.id, 2000)).rejects.toThrow(BadRequestException);
+      await expect(service.extendStopTime(created.id, 1500)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects extending a stream that is not active', async () => {
+      const created = await service.create({
+        sender: 'G' + 'A'.repeat(55),
+        recipient: 'G' + 'B'.repeat(55),
+        token: 'native',
+        ratePerSecond: 10,
+        startTime: 1000,
+        stopTime: 2000,
+      }, 'tx-extend-test-3');
+
+      await service.updateStatus(created.id, StreamStatus.CANCELLED);
+      await expect(service.extendStopTime(created.id, 3000)).rejects.toThrow(BadRequestException);
+    });
+  });
 });
